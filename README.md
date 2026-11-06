@@ -93,7 +93,7 @@ localguide.md                 本地版（ComfyUI Desktop）說明
 - 本 repo：MIT。
 - 生成引擎是 [H3 Toybox](https://github.com/dseditor/minimax-h3-colab)（同作者）。
 - [google-colab-cli](https://pypi.org/project/google-colab-cli/)（Google，Apache-2.0）；登入流程照它的 `auth.py`。
-- 模型依各自授權：MiniMax H3（MiniMax H3 Community License，**請先讀**，部分地區另有限制，衍生作品需標示 "Powered by MiniMax H3"）、P-H3-Image（PrunaAI，同上＋Apache-2.0 部分）、各 LoRA 見 [dseditor/minimax-h3-studio-assets](https://huggingface.co/dseditor/minimax-h3-studio-assets)。
+- 模型依各自授權：MiniMax H3（MiniMax H3 Community License，**請先讀**，部分地區另有限制；生成的影片不需要標示，用 H3 開發的產品或服務才有 "Powered by MiniMax H3" 的鼓勵標示，商業產品另有條款）、P-H3-Image（PrunaAI，同上＋Apache-2.0 部分）、各 LoRA 見 [dseditor/minimax-h3-studio-assets](https://huggingface.co/dseditor/minimax-h3-studio-assets)。
 - 前人經驗：[bockybocky/colab-gpu-runner](https://github.com/bockybocky/colab-gpu-runner)（MIT）的 Windows 補丁與排錯原則。
 - H3 官方提示詞指南不轉載，skill 會請 AI 直接讀官方固定版本。
 
