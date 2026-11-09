@@ -3,6 +3,21 @@
 放在工作資料夾裡；`inputs`／`voices`／`first`／`last`／`extend` 的路徑都**相對於 manifest 所在的資料夾**。
 成品下載到同一個資料夾的 `out/<id>.<副檔名>`，總結在 `out/results.json`。
 
+**`jobs` 只放使用者要的東西**：要一支影片就只有一個 job，不用湊圖片、配音或多支影片。最小的清單長這樣：
+
+```json
+{
+  "gpu": "L4",
+  "jobs": [
+    {"id": "shot01", "type": "video", "mode": "text",
+     "prompt": "...", "seconds": 5, "aspect": "9:16", "resolution": "480P"}
+  ]
+}
+```
+
+下面這份是**欄位示範**，把每一種工作（圖片、編輯、影片、延伸、頭尾格、配音）各寫一次給你看寫法，
+**不是每批都要照這個數量做**：
+
 ```json
 {
   "gpu": "L4",

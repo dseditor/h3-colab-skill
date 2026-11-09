@@ -42,6 +42,11 @@
 | `that job has not produced a file` | `@id` 指向的 job 排在後面或失敗了 |
 | 進度一直停在 `models` | 第一次要下載約 50–60 GB，L4 上通常 1–3 分鐘；超過 15 分鐘看 Hugging Face 狀態 |
 
+## 開機就失敗：`Length Required`（HTTP 411）
+`h3run.py run` 在 assign（要 GPU）那一步報 `ColabRequestError ... Length Required`：某些網路環境（例如經過代理）會拒絕沒有內容的 POST。
+重跑一次補丁就好（不會重複補）：`python <repo>/install/patch_colab_cli.py`，看到 `client.py` 顯示「已補丁」或「已經補過」再重送。
+這一步失敗時不會開機，也不會扣點數。
+
 ## 想看遠端的完整紀錄
 ```
 colab exec -s <session> -f <一個只有 print(open('/content/h3job/remote_job.log').read()[-5000:]) 的檔案>
