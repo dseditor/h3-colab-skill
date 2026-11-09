@@ -10,7 +10,7 @@
 AI 負責理解需求、寫提示詞、整理工作清單、檢查成果；生成全部在 Colab 上跑。
 **你的電腦不需要顯示卡**，AI 本身不會畫圖也沒關係（例如 Claude 也能把整套分鏡畫完）。
 
-和 [minimax-h3-colab](https://github.com/dseditor/minimax-h3-colab) 的差別：那邊的 H3 Toybox 是**打開 Colab 網頁自己按**；這個是**裝在 AI 底下、完全自動**，AI 自己開機、送工作、收檔案、關機。
+和 [minimax-h3-colab](https://github.com/dseditor/minimax-h3-colab) 的差別：那邊是**打開 Colab 網頁自己按**；這個是**裝在 AI 底下、完全自動**，AI 自己開機、送工作、收檔案、關機。生成只需要 ComfyUI，不用另外裝別的程式。
 
 ---
 
@@ -34,7 +34,7 @@ AI 會先跟你說明，你同意才安裝。接著問你兩件事（不回答�
 ## 有顯示卡？也可以在自己電腦上跑
 
 裝好 **ComfyUI Desktop**（https://comfy.org/download）、有 16 GB 以上的 NVIDIA 顯示卡，就可以改成**本地版**：
-不用 Colab、不用登入、不用等 GPU，模型只下載一次（放在 `C:\Users\<你>\ComfyUI-Shared\models`），影片預設 480P。
+不用 Colab、不用登入、不用等 GPU，模型只下載一次（放在 `%LOCALAPPDATA%\Comfy-Desktop\ComfyUI-Shared\models`，ComfyUI Desktop 所有安裝共用的那一個，不放在單一安裝裡，免得下載兩次），影片預設 480P。
 AI 開始時會問你要用 Colab 還是本地。完整說明：**[localguide.md](localguide.md)**。
 
 ## 需要什麼
@@ -55,7 +55,7 @@ AI 開始時會問你要用 Colab 還是本地。完整說明：**[localguide.md
 | 步驟 | 時間 |
 |---|---|
 | 開機＋上傳素材 | 約 1 分鐘 |
-| 安裝 ComfyUI、節點與 Toybox | 39 秒 |
+| 安裝 ComfyUI 與節點 | 不到 40 秒 |
 | 下載模型（含生圖約 60 GB）＋啟動 | 約 3.5 分鐘 |
 | 圖片：2 張參考圖編輯、2K（含第一次載入模型） | 112 秒 |
 | 影片：參考生成 5 秒 480P | 160 秒 |
@@ -82,7 +82,8 @@ h3-multimodal-colab/          ← 裝進 AI 的 skill
   scripts/h3local.py          本地版：用 ComfyUI Desktop 生成（見 localguide.md）
   scripts/colab_login.py      兩段式登入（AI 給網址 → 你貼授權碼）
   remote/                     在 Colab 上跑：裝環境、下載模型、逐一生成
-  workflows/h3_tts32_api.json H3 32×32 配音工作流（只解碼聲音）
+  workflows/                  直接送給 ComfyUI 的工作流：影片、圖片、配音（說明見裡面的 README.md）
+  scripts/selftest_graph.py   不用 GPU 檢查每一種工作組出來的工作流
   references/                 manifest 格式、提示詞寫法、排錯
 install/                      install.ps1（Windows）、install.sh（macOS／Linux）
 INSTALL_FOR_AGENTS.md         給 AI 看的安裝步驟
@@ -92,7 +93,7 @@ localguide.md                 本地版（ComfyUI Desktop）說明
 ## 授權與來源
 
 - 本 repo：MIT。
-- 生成引擎是 [H3 Toybox](https://github.com/dseditor/minimax-h3-colab)（同作者）。
+- 影片與圖片工作流的接法與參數來自 [minimax-h3-colab](https://github.com/dseditor/minimax-h3-colab)（同作者），已經整理成可以直接送 ComfyUI 的檔案。
 - [google-colab-cli](https://pypi.org/project/google-colab-cli/)（Google，Apache-2.0）；登入流程照它的 `auth.py`。
 - 模型依各自授權：MiniMax H3（MiniMax H3 Community License，**請先讀**，部分地區另有限制；生成的影片不需要標示，用 H3 開發的產品或服務才有 "Powered by MiniMax H3" 的鼓勵標示，商業產品另有條款）、P-H3-Image（PrunaAI，同上＋Apache-2.0 部分）、各 LoRA 見 [dseditor/minimax-h3-studio-assets](https://huggingface.co/dseditor/minimax-h3-studio-assets)。
 - 前人經驗：[bockybocky/colab-gpu-runner](https://github.com/bockybocky/colab-gpu-runner)（MIT）的 Windows 補丁與排錯原則。

@@ -40,6 +40,12 @@
 | 開頭的台詞被吃掉 | 第一句前加短的語氣詞，或那句單獨重錄 |
 | 圖片長文字變成亂碼 | P-H3 的已知限制：字放短、用引號 |
 | `that job has not produced a file` | `@id` 指向的 job 排在後面或失敗了 |
+| `找不到參考素材 @圖片N` | N 超過 `inputs` 裡那一類素材的數量（圖片、影片、聲音各自從 1 數） |
+| log 寫 `inputs not mentioned ... are not used` | 參考生成只用提示詞裡點到名的素材：沒寫 `@圖片N` 的那張不會送進去 |
+| `graph check failed before posting` | 組出來的工作流有斷線或不該有的節點，**沒有送出、沒有花 GPU**。跑 `python scripts/selftest_graph.py` 看是哪一種；`workflows/` 的檔案被換過就換回 repo 的版本 |
+| `the graph ComfyUI ran is not the planned one` | 生成完讀回 ComfyUI 實際跑的工作流，發現參考、秒數或 LoRA 沒接對：成品不可信，重送那一段 |
+| 延伸的成品只有新的那一段，`warning` 寫「接回原片失敗」 | ffmpeg 接片失敗（通常是原片格式怪）：新的那段還在，可以自己接，或換一支原片 |
+| `找不到 ffmpeg` | 延伸影片、參考影片需要它；Colab 上本來就有，本地版請安裝 |
 | 進度一直停在 `models` | 第一次要下載約 50–60 GB，L4 上通常 1–3 分鐘；超過 15 分鐘看 Hugging Face 狀態 |
 
 ## 開機就失敗：`Length Required`（HTTP 411）
@@ -51,7 +57,7 @@
 ```
 colab exec -s <session> -f <一個只有 print(open('/content/h3job/remote_job.log').read()[-5000:]) 的檔案>
 ```
-ComfyUI 的紀錄在 `/content/comfyui.log`，Toybox 的在 `/content/toybox.log`。
+ComfyUI 的紀錄在 `/content/comfyui.log`；每個工作送了什麼、哪裡出錯，在 `/content/h3job/remote_job.log`。
 
 ## 檔案回傳
 - 預設用 `colab download` 一個一個抓（圖片、短片、配音都很小）。

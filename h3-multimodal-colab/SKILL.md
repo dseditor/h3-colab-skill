@@ -15,7 +15,7 @@ description: Generate pictures, talking videos, video extensions and voice (TTS)
 | `tts` | 配音：設計聲音，或拿一段聲音當音色參考說新台詞 | H3 32×32（只解碼聲音） |
 
 你（大模型）負責**理解需求、寫提示詞、組工作清單、檢查成果**；生成全部在 Colab 上跑。
-生成引擎（H3 Toybox）由腳本自動安裝、在背景啟動，**使用者不需要另外安裝或打開 Toybox**，你也不用操作它的網頁。
+生成只需要 ComfyUI：腳本自動安裝、在背景啟動，把做好的工作流直接送給它，**使用者不需要另外安裝或打開任何網頁**。
 所以就算你自己不能生圖，也能照這份 skill 把整套分鏡、影片、配音做完。
 
 ---
@@ -33,12 +33,14 @@ description: Generate pictures, talking videos, video extensions and voice (TTS)
 沒有 colab-cli、不用登入、不用等 GPU、沒有 15 分鐘保留與關機；影片預設 **480P**。
 ```
 python scripts/h3local.py check            # ComfyUI 開了沒、缺哪些模型與節點
-python scripts/h3local.py setup            # 第一次：下載缺的模型（約 50 GB）、節點組、H3 Toybox
+python scripts/h3local.py setup            # 第一次：下載缺的模型（約 50 GB）、節點組
 python scripts/h3local.py run h3job/manifest.json [--confirmed]
 ```
-- 模型放 `C:\Users\<使用者>\ComfyUI-Shared\models`（ComfyUI Desktop 的預設）；放別處加 `--models-dir`。
+- 模型放 `%LOCALAPPDATA%\Comfy-Desktop\ComfyUI-Shared\models`（例如 `C:\Users\<使用者>\AppData\Local\Comfy-Desktop\ComfyUI-Shared\models`）；放別處加 `--models-dir`。
+  這是 ComfyUI Desktop **所有安裝共用**的模型資料夾；`...\Comfy-Desktop\ComfyUI-Installs\<名稱>\ComfyUI\models` 只屬於其中一個安裝，有共用資料夾時不往那裡放（不然同一個模型會下載兩次）。
 - `setup` 裝了新節點時，照它印出的指令裝節點套件，請使用者**重開 ComfyUI Desktop**，再 `check`。
 - 可攜版 ComfyUI 回報不出自己的位置：加 `--comfy-dir <ComfyUI 資料夾>`。
+- 延伸影片、參考影片要用到 **ffmpeg**：`check` 說找不到時，請使用者安裝（Windows：`winget install ffmpeg`）。
 - **監看**：`run` 每 10 秒印進度，做好一個就放進 `out/`；你也可以直接看 `http://127.0.0.1:8188/queue`。
 - 下面第 1 節的流程照走，只是第 6 步換成 `h3local.py run`，第 8 步不用問保留 GPU。
 
@@ -49,7 +51,7 @@ python scripts/h3local.py run h3job/manifest.json [--confirmed]
 1. **會做什麼**：在使用者的 Google 帳號開一台 Colab GPU，裝 ComfyUI＋H3，生成完把檔案下載回這台電腦，然後**關掉那台 GPU**。
 2. **要什麼訂閱**：至少 **Google AI Pro**（附 Colab 運算單元）。Plus 不夠。在 Colab 右上角「資源」可以看剩多少點。
 3. **花多少點**：L4 約每小時 1.5 點（≈ RTX 4060，練習用），G4 約每小時 11 點（≈ RTX Pro 6000，快）。每次開機要先裝環境＋下載約 50 GB 模型（加生圖約 60 GB），Colab 網路快，大約 3–5 分鐘；之後每段影片 L4 約數分鐘。
-4. **會從哪裡抓什麼**：GitHub 的 ComfyUI、3 個節點組、H3 Toybox；Hugging Face 的 H3 模型（Comfy-Org、OliviaRossi PRISM、PrunaAI P-H3-Image、dseditor 鏡像的 LoRA）。**全部下載到 Colab 上，不佔這台電腦的空間。**
+4. **會從哪裡抓什麼**：GitHub 的 ComfyUI、3 個節點組；Hugging Face 的 H3 模型（Comfy-Org、OliviaRossi PRISM、PrunaAI P-H3-Image、dseditor 鏡像的 LoRA）。**全部下載到 Colab 上，不佔這台電腦的空間。**
 5. **何時要登入**：只有第一次。你會給他一個 Google 網址，他用**有 AI Pro 的帳號**登入、按允許，把頁面上的授權碼貼回對話。token 存在 `~/.config/colab-cli/token.json`，之後不用再登入。
 
 說明完、使用者同意安裝後，再問兩個選擇（**沒有回答就用預設**），記住他的答案，之後每批照用：

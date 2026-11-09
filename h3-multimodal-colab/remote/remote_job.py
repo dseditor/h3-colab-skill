@@ -2,14 +2,16 @@
 """Runs ON the Colab VM. Started in the background by start.py; progress goes to /content/h3job/status.json.
 
 One batch = /content/h3job/manifest.json (written by the local h3run.py). Steps:
-  1 install (skipped when the marker exists): ComfyUI + 3 node packs + H3 Toybox (headless engine)
+  1 install (skipped when the marker exists): ComfyUI + 3 node packs
   2 models: H3 PRISM int8 + Qwen3-VL text encoder + video/audio VAE + LoRAs; the P-H3 picture set only when
     the batch has an image job
-  3 start ComfyUI (127.0.0.1:8188) and H3 Toybox (127.0.0.1:8190), both private to the VM
+  3 start ComfyUI (127.0.0.1:8188), private to the VM
   4 every job in order -> /content/h3job/out/<id>.<ext>
-Videos, extensions and pictures go through Toybox's own API (the same code as the H3 Toybox notebook); TTS goes
-straight to ComfyUI with the 32x32 H3 graph (sound only, audio VAE decode).
+Only ComfyUI is needed. Videos, extensions and pictures are built by h3graph.py from the clean templates in
+workflows/ (h3_video_api.json, h3_picture_api.json) and posted straight to ComfyUI's /prompt; an extension's tail
+and the final join are made here with ffmpeg. TTS posts the 32x32 H3 graph (sound only, audio VAE decode).
 """
+import hashlib
 import json
 import os
 import shutil
@@ -17,24 +19,26 @@ import subprocess
 import sys
 import time
 import traceback
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
-# H3JOB_LOCAL_TEST=1 runs the job part against servers already running on a desktop (no install, no downloads);
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # h3graph.py sits next to this file (also on Colab)
+import h3graph as G                                         # noqa: E402
+
+# H3JOB_LOCAL_TEST=1 runs the job part against a ComfyUI already running on a desktop (no install, no downloads);
 # scripts/h3local.py uses it for the local mode (ComfyUI Desktop), together with H3JOB_FETCH and H3JOB_COMFY_INPUT
 LOCAL_TEST = os.environ.get("H3JOB_LOCAL_TEST") == "1"
 JOB = Path(os.environ.get("H3JOB_DIR", "/content/h3job"))
 OUT = JOB / "out"
+WORK = JOB / "work"
 STATUS = JOB / "status.json"
 COMFY = Path(os.environ.get("H3JOB_COMFY", "/content/ComfyUI"))
-APP_REPO = Path("/content/minimax-h3-colab")
-APP = APP_REPO / "toybox"
-DATA = JOB / "toybox_data"
 MARK = Path("/content/.h3skill_setup_v1")
 COMFY_URL = os.environ.get("H3JOB_COMFY_URL", "http://127.0.0.1:8188")
-TOYBOX_URL = os.environ.get("H3JOB_TOYBOX_URL", "http://127.0.0.1:8190")
 STATE = {"stage": "starting", "log": [], "jobs": {}, "done": False, "error": None, "started": time.time()}
+TEMPLATE_DIRS = [JOB, Path(__file__).resolve().parent.parent / "workflows"]  # uploaded copies first
 
 ASSETS = "dseditor/minimax-h3-studio-assets"
 BASE_MODELS = [  # (repo, file in repo, models/ subfolder)
@@ -62,6 +66,9 @@ NODES = {
     "comfyui-SelfLift": "https://github.com/facok/comfyui-SelfLift",
     "ComfyUI-H3-Motion-Context": "https://github.com/NikoDemon80/ComfyUI-H3-Motion-Context",
 }
+IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+VIDEO_EXT = {".mp4", ".mov", ".webm", ".mkv", ".avi"}
+AUDIO_EXT = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
 
 
 # ---------------------------------------------------------------- status
@@ -100,7 +107,6 @@ def install():
     if cap < (8, 0):
         raise RuntimeError(f"GPU capability {cap} cannot run the int8 H3 model (T4 is too old); use L4 or G4")
     if MARK.exists():
-        clone("https://github.com/dseditor/minimax-h3-colab.git", APP_REPO)  # the Toybox engine follows its repo
         log("install: already done on this runtime")
         return
     log(f"install: GPU {torch.cuda.get_device_name(0)}, capability {cap}", "install")
@@ -112,8 +118,6 @@ def install():
     sh([sys.executable, "-m", "pip", "install", "-q", "-r", str(COMFY / "requirements.txt"), "huggingface_hub", "hf_xet"])
     for name, url in NODES.items():
         clone(url, COMFY / "custom_nodes" / name)
-    clone("https://github.com/T8mars/comfyui-minimax-h3-prompt-enhancer-T8", "/content/t8-enhancer")
-    clone("https://github.com/dseditor/minimax-h3-colab.git", APP_REPO)
     MARK.write_text(time.ctime())
     log("install: done")
 
@@ -128,15 +132,9 @@ def download(files):
             got = Path(hf_hub_download(repo_id=repo, filename=name, local_dir="/content/hf"))
             shutil.move(str(got), str(target))
         log(f"model ready: {target.name} ({target.stat().st_size / 2**30:.1f} GiB)")
-    guides = APP / "guides"
-    guides.mkdir(exist_ok=True)
-    for g in ("VIDEO_PROMPT_WRITING_GUIDE_ref_en.md", "VIDEO_PROMPT_WRITING_GUIDE_base_en.md"):
-        if not (guides / g).exists():
-            got = Path(hf_hub_download(repo_id="MiniMaxAI/MiniMax-H3", filename="docs/" + g, local_dir="/content/hf"))
-            shutil.copy(str(got), str(guides / g))
 
 
-# ---------------------------------------------------------------- 3 servers
+# ---------------------------------------------------------------- 3 ComfyUI
 def wait_http(url, name, logfile, tries=180):
     for _ in range(tries):
         try:
@@ -147,7 +145,7 @@ def wait_http(url, name, logfile, tries=180):
     raise RuntimeError(f"{name} did not start:\n" + Path(logfile).read_text(errors="ignore")[-2000:])
 
 
-def start_servers(pictures):
+def start_comfy():
     try:
         urllib.request.urlopen(COMFY_URL + "/system_stats", timeout=2)
         log("ComfyUI already running")
@@ -156,31 +154,10 @@ def start_servers(pictures):
                          stdout=open("/content/comfyui.log", "w"), stderr=subprocess.STDOUT, start_new_session=True)
         wait_http(COMFY_URL + "/system_stats", "ComfyUI", "/content/comfyui.log")
         log("ComfyUI started")
-    DATA.mkdir(parents=True, exist_ok=True)
     (COMFY / "input").mkdir(exist_ok=True)
-    cfg_path = DATA / "config.json"
-    cfg = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
-    cfg.update({"comfy_url": COMFY_URL, "comfy_input_dir": str(COMFY / "input"),
-                "skills_dir": "/content/t8-enhancer/directional_skills", "free_after_rewrite": True})
-    cfg.pop("guides", None)
-    have = all((COMFY / "models" / folder / Path(f).name).is_file() for _, f, folder in PICTURE_MODELS)
-    cfg["image"] = dict(cfg.get("image") or {}, engine="ph3", installed=have)
-    cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=1), encoding="utf-8")
-    try:  # a Toybox from an earlier batch on this runtime may still be up: restart it so the config is fresh
-        urllib.request.urlopen(TOYBOX_URL + "/api/config", timeout=2)
-        subprocess.run(["pkill", "-f", "toybox/server.py"], check=False)
-        time.sleep(2)
-    except Exception:
-        pass
-    subprocess.Popen([sys.executable, str(APP / "server.py")], cwd=str(APP),
-                     env=dict(os.environ, H3TOYBOX_PORT="8190", H3TOYBOX_DATA=str(DATA),
-                              H3TOYBOX_SECRETS=str(JOB / "secrets.json")),
-                     stdout=open("/content/toybox.log", "w"), stderr=subprocess.STDOUT, start_new_session=True)
-    wait_http(TOYBOX_URL + "/api/config", "H3 Toybox", "/content/toybox.log", tries=30)
-    log(f"H3 Toybox started (pictures {'on' if have else 'off'})")
 
 
-# ---------------------------------------------------------------- 4 jobs
+# ---------------------------------------------------------------- ComfyUI client
 def call(url, body=None, data=None, headers=None, timeout=120):
     req = urllib.request.Request(url, headers=headers or {"Content-Type": "application/json"},
                                  data=data if data is not None else (None if body is None else json.dumps(body).encode()))
@@ -192,40 +169,35 @@ def call(url, body=None, data=None, headers=None, timeout=120):
     return json.loads(raw) if raw.strip() else {}
 
 
-UPLOADED = {}
+def queue(graph):
+    problems = G.check_graph(graph)
+    if problems:  # never post a graph with a dangling link or a preview/VHS node
+        raise RuntimeError("graph check failed before posting: " + "; ".join(problems[:6]))
+    return call(COMFY_URL + "/prompt", {"prompt": graph, "client_id": "h3skill"})["prompt_id"]
 
 
-def library_id(rel):
-    """Upload one input file (relative to the job folder) into the Toybox library, once."""
-    if rel not in UPLOADED:
-        if rel.startswith("@"):  # the output of an earlier job in this batch, e.g. "@frame01"
-            st = STATE["jobs"].get(rel[1:], {})
-            if st.get("status") != "done":
-                raise RuntimeError(f"{rel}: that job has not produced a file (it must come earlier and succeed)")
-            path = OUT / st["file"]
-        else:
-            path = JOB / "inputs" / rel
-        if not path.is_file():
-            raise RuntimeError(f"input not found: {rel}")
-        item = call(TOYBOX_URL + "/api/upload", data=path.read_bytes(),
-                    headers={"X-Filename": urllib.parse.quote(path.name), "Content-Type": "application/octet-stream"})
-        UPLOADED[rel] = item["id"]
-    return UPLOADED[rel]
-
-
-TOYBOX_JOB = {}  # our job id -> Toybox job id (an extension takes an earlier clip from the same batch)
-
-
-def wait_toybox(tid, timeout):
-    t0 = time.time()
+def wait_history(pid, timeout, what):
+    """The /history entry once the prompt has finished; a failed run raises with ComfyUI's own message."""
+    t0, last = time.time(), time.time()
     while time.time() - t0 < timeout:
-        job = next((j for j in call(TOYBOX_URL + "/api/jobs") if j["id"] == tid), None)
-        if job and job.get("status") == "done":
-            return job
-        if job and job.get("status") in ("error", "failed"):
-            raise RuntimeError(job.get("error") or "generation failed")
-        time.sleep(4)
+        h = call(COMFY_URL + f"/history/{pid}").get(pid)
+        if h and h.get("status", {}).get("completed") is not None:
+            if h["status"].get("status_str") == "error":
+                msgs = [m[1] for m in h["status"].get("messages", []) if m[0] == "execution_error"]
+                m = msgs[0] if msgs else {}
+                raise RuntimeError(f"ComfyUI: {m.get('node_type', '')} {m.get('exception_message', 'error')[:400]}".strip())
+            return h
+        if time.time() - last > 120:
+            last = time.time()
+            log(f"{what}: generating ({time.time() - t0:.0f} s)")
+        time.sleep(2)
     raise RuntimeError(f"no result after {timeout} s")
+
+
+def ran_graph(entry):
+    """The graph ComfyUI really ran (history keeps [number, prompt_id, graph, extra, outputs])."""
+    p = entry.get("prompt") or []
+    return p[2] if len(p) > 2 and isinstance(p[2], dict) else {}
 
 
 def comfy_file(info):
@@ -244,44 +216,238 @@ def comfy_input():
     return Path(os.environ.get("H3JOB_COMFY_INPUT") or COMFY / "input")
 
 
-def toybox_data():
-    return Path(os.environ.get("H3JOB_TOYBOX_DATA", DATA))
+def saved_video(entry):
+    """The file our SaveVideo ("sv") wrote. LoadVideo also reports its input as a UI output (type "input"),
+    so only files of type "output" count."""
+    outputs = entry.get("outputs", {})
+    ordered = [outputs[k] for k in (G.N_SAVE,) if k in outputs] + list(outputs.values())
+    for node_out in ordered:
+        for key in ("images", "gifs", "videos", "video"):
+            for f in node_out.get(key, []) or []:
+                if (isinstance(f, dict) and f.get("type", "output") == "output"
+                        and str(f.get("filename", "")).lower().endswith((".mp4", ".webm", ".mkv", ".mov"))):
+                    return f
+    return None
 
 
+def saved_image(entry):
+    for f in entry.get("outputs", {}).get(G.N_IMG_SAVE, {}).get("images", []) or []:
+        if f.get("type", "output") == "output":
+            return f
+    return None
+
+
+# ---------------------------------------------------------------- media (ffmpeg, PyAV / Pillow when present)
+def ffmpeg_exe(tool="ffmpeg"):
+    exe = shutil.which(tool)
+    if exe:
+        return exe
+    if tool == "ffmpeg":
+        try:
+            import imageio_ffmpeg
+            return imageio_ffmpeg.get_ffmpeg_exe()
+        except ImportError:
+            pass
+    raise RuntimeError(f"找不到 {tool}：延伸影片與參考影片需要 ffmpeg")
+
+
+def image_size(path):
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(path) as im:
+            return ImageOps.exif_transpose(im).size
+    except ImportError:
+        pass
+    out = subprocess.run([ffmpeg_exe("ffprobe"), "-v", "error", "-select_streams", "v:0", "-show_entries",
+                          "stream=width,height", "-of", "json", str(path)], capture_output=True, text=True, check=True)
+    s = json.loads(out.stdout)["streams"][0]
+    return int(s["width"]), int(s["height"])
+
+
+def probe_video(path):
+    """(width, height, has_audio)."""
+    try:
+        import av
+        with av.open(str(path)) as c:
+            v = c.streams.video[0]
+            return v.codec_context.width, v.codec_context.height, len(c.streams.audio) > 0
+    except ImportError:
+        pass
+    out = subprocess.run([ffmpeg_exe("ffprobe"), "-v", "error", "-show_entries", "stream=codec_type,width,height",
+                          "-of", "json", str(path)], capture_output=True, text=True, check=True)
+    streams = json.loads(out.stdout).get("streams", [])
+    v = next(s for s in streams if s.get("codec_type") == "video")
+    return int(v["width"]), int(v["height"]), any(s.get("codec_type") == "audio" for s in streams)
+
+
+def conform(src_path, dest, width, height, has_audio, tail=None):
+    """Re-encode (the tail of) a video at 24 fps and the generation size, always with a stereo track."""
+    cmd = [ffmpeg_exe(), "-y", "-loglevel", "error"]
+    if tail:
+        cmd += ["-sseof", f"-{tail}"]
+    cmd += ["-i", str(src_path)]
+    if not has_audio:
+        cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
+    cmd += ["-vf", f"fps={G.FPS},scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1",
+            "-map", "0:v:0", "-map", "0:a:0" if has_audio else "1:a:0", "-shortest",
+            "-c:v", "libx264", "-crf", "12", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", str(dest)]
+    subprocess.run(cmd, check=True, capture_output=True)
+
+
+def join_clips(first, second, dest):
+    cmd = [ffmpeg_exe(), "-y", "-loglevel", "error", "-i", str(first), "-i", str(second), "-filter_complex",
+           "[0:a]aresample=48000,aformat=channel_layouts=stereo[a0];[1:a]aresample=48000,aformat=channel_layouts=stereo[a1];"
+           "[0:v][a0][1:v][a1]concat=n=2:v=1:a=1[v][a]",
+           "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-crf", "17", "-preset", "veryfast",
+           "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(dest)]
+    subprocess.run(cmd, check=True, capture_output=True)
+
+
+def last_frame(src, dest):
+    """The final decodable frame of a video (each frame of the last 1.5 s overwrites the same file)."""
+    subprocess.run([ffmpeg_exe(), "-y", "-loglevel", "error", "-sseof", "-1.5", "-i", str(src), "-update", "1",
+                    "-q:v", "2", str(dest)], check=True, capture_output=True)
+    if not Path(dest).is_file():
+        raise RuntimeError("讀不到延伸影片的最後一格")
+
+
+# ---------------------------------------------------------------- inputs -> ComfyUI input folder
+STAGED = {}  # source file -> media item (each file is copied into ComfyUI's input folder once)
+
+
+def source_path(rel):
+    """A manifest file field: a path relative to the job folder, or "@<id>" = an earlier job's output."""
+    rel = str(rel)
+    if rel.startswith("@"):
+        st = STATE["jobs"].get(rel[1:], {})
+        if st.get("status") != "done":
+            raise RuntimeError(f"{rel}: that job has not produced a file (it must come earlier and succeed)")
+        path = OUT / st["file"]
+    else:
+        path = JOB / "inputs" / rel
+    if not path.is_file():
+        raise RuntimeError(f"input not found: {rel}")
+    return path
+
+
+def stage(path, prefix="h3skill"):
+    """Copy one file into ComfyUI's input folder and describe it (kind, size, audio track)."""
+    path = Path(path)
+    key = str(path.resolve())
+    if key not in STAGED:
+        ext = path.suffix.lower()
+        kind = "image" if ext in IMAGE_EXT else "video" if ext in VIDEO_EXT else "audio" if ext in AUDIO_EXT else None
+        if kind is None:
+            raise RuntimeError(f"不支援的檔案格式：{path.name}")
+        digest = hashlib.sha1(path.read_bytes()).hexdigest()[:12]
+        name = f"{prefix}_{digest}{ext}"
+        dst = comfy_input() / name
+        if not dst.is_file():
+            shutil.copy(str(path), str(dst))
+        item = {"kind": kind, "name": name, "path": str(path), "width": None, "height": None, "has_audio": False}
+        if kind == "image":
+            item["width"], item["height"] = image_size(path)
+        elif kind == "video":
+            item["width"], item["height"], item["has_audio"] = probe_video(path)
+        STAGED[key] = item
+    return STAGED[key]
+
+
+def media(rel):
+    return stage(source_path(rel))
+
+
+def extend_source(j):
+    """The video to continue: an earlier job of this batch ("shot01" or "@shot01"; an extension's own output is
+    already the joined, full-length video) or a video file the user gave."""
+    ref = str(j["extend"])
+    key = ref.lstrip("@")
+    if key in STATE["jobs"] and key != j["id"]:
+        st = STATE["jobs"][key]
+        if st.get("status") != "done":
+            raise RuntimeError(f"extend {ref}: that job has not produced a video (it must come earlier and succeed)")
+        path = OUT / st["file"]
+    else:
+        path = source_path(ref)
+    item = stage(path)
+    if item["kind"] != "video":
+        raise RuntimeError("只有影片可以延伸")
+    return item
+
+
+# ---------------------------------------------------------------- 4 jobs
 def run_image(j):
-    tray = [{"id": library_id(r)} for r in j.get("inputs", [])]
-    job = call(TOYBOX_URL + "/api/generate", {"mode": "image", "prompt": j["prompt"], "tray": tray,
-                                              "aspect": j.get("aspect", "auto"), "image_size": j.get("size", "2K"),
-                                              "seed": j.get("seed")})
-    done = wait_toybox(job["id"], 900)
-    return comfy_file(done["image"]), done
+    if not LOCAL_TEST and not all((COMFY / "models" / folder / Path(f).name).is_file() for _, f, folder in PICTURE_MODELS):
+        raise RuntimeError("picture models are not installed on this runtime")
+    plan = G.plan_picture(j, [media(r) for r in j.get("inputs", [])])
+    graph = G.picture_graph(G.load_template(G.PICTURE_TEMPLATE, TEMPLATE_DIRS), plan)
+    pid = queue(graph)
+    entry = wait_history(pid, int(j.get("timeout", 900)), j["id"])
+    miswired = G.check_picture(ran_graph(entry), plan)  # read back the graph ComfyUI really ran
+    if miswired:
+        raise RuntimeError("; ".join(miswired[:4]))
+    f = saved_image(entry)
+    if not f:
+        raise RuntimeError("ComfyUI finished but saved no picture")
+    return comfy_file(f), {"final_prompt": plan["final_prompt"], "seed": plan["seed"]}
 
 
 def run_video(j):
-    mode = j.get("mode", "ref")
-    body = {"mode": {"ref": "ref", "frames": "frames", "first_last": "frames", "text": "text"}[mode],
-            "prompt": j["prompt"], "seconds": j.get("seconds", 10), "aspect": j.get("aspect", "auto"),
-            "resolution": j.get("resolution", "480P"), "intensity": j.get("intensity", "off"),
-            "fast": j.get("fast", True), "skill": j.get("skill", ""), "seed": j.get("seed")}
-    if body["mode"] == "ref":
-        body["tray"] = [{"id": library_id(r)} for r in j.get("inputs", [])]
+    mode = G.VIDEO_MODES.get(j.get("mode", "ref"))
+    kw = {}
+    src = None
+    if mode == "ref":
+        kw["inputs"] = [media(r) for r in j.get("inputs", [])]
         if j.get("extend"):
-            src = str(j["extend"]).lstrip("@")
-            if src in TOYBOX_JOB:  # a clip made earlier in this batch
-                item = call(TOYBOX_URL + "/api/library/from_job", {"id": TOYBOX_JOB[src]})
-                src_id = item["id"]
-            else:  # a video the user supplied
-                src_id = library_id(j["extend"])
-            body["tray"].insert(0, {"id": src_id, "extend": True})
-    elif body["mode"] == "frames":
-        body["first_id"] = library_id(j["first"]) if j.get("first") else None
-        body["last_id"] = library_id(j["last"]) if j.get("last") else None
-    job = call(TOYBOX_URL + "/api/generate", body)
-    TOYBOX_JOB[j["id"]] = job["id"]
-    done = wait_toybox(job["id"], int(j.get("timeout", 2400)))
-    if done.get("full_video"):  # an extension: the new clip already joined after the source
-        return toybox_data() / "outputs" / done["full_video"], done
-    return comfy_file(done["video"]), done
+            src = extend_source(j)
+            WORK.mkdir(parents=True, exist_ok=True)
+            frame = WORK / f"last_{Path(src['name']).stem}.jpg"
+            last_frame(src["path"], frame)
+            kw["extend"] = {"width": src["width"], "height": src["height"], "has_audio": src["has_audio"],
+                            "last_frame": stage(frame, "h3skill_last")}
+    elif mode == "frames":
+        kw["first"] = media(j["first"]) if j.get("first") else None
+        kw["last"] = media(j["last"]) if j.get("last") else None
+    plan = G.plan_video(j, **kw)
+    if plan["unused_inputs"]:
+        log(f"{j['id']}: inputs not mentioned with @圖片N/@影片N/@音訊N are not used: {', '.join(plan['unused_inputs'])}")
+
+    tail = None
+    if src:  # the source's last seconds, at the new clip's size and 24 fps, are pinned into the head of the clip
+        tail = f"h3skill_tail_{j['id']}.mp4"
+        conform(src["path"], comfy_input() / tail, plan["width"], plan["height"], src["has_audio"],
+                tail=G.EXTEND["tail_seconds"])
+    graph = G.video_graph(G.load_template(G.VIDEO_TEMPLATE, TEMPLATE_DIRS), plan, tail)
+    problems = G.check_video(graph, plan, tail)
+    if problems:
+        raise RuntimeError("graph check failed before posting: " + "; ".join(problems[:6]))
+    pid = queue(graph)
+    log(f"{j['id']}: {plan['task']} {plan['width']}x{plan['height']} {plan['seconds']:g}s queued")
+    entry = wait_history(pid, int(j.get("timeout", 2400)), j["id"])
+    problems = G.check_video(ran_graph(entry), plan, tail)  # read back the graph ComfyUI really ran
+    if problems:
+        raise RuntimeError("the graph ComfyUI ran is not the planned one: " + "; ".join(problems[:6]))
+    f = saved_video(entry)
+    if not f:
+        raise RuntimeError("ComfyUI finished but saved no video")
+    clip = comfy_file(f)
+    info = {"final_prompt": plan["final_prompt"], "seed": plan["seed"]}
+    if src:  # extension output = the source (conformed to the same size) joined with the new clip
+        WORK.mkdir(parents=True, exist_ok=True)
+        full_src, full = WORK / f"{j['id']}_src.mp4", WORK / f"{j['id']}_full.mp4"
+        try:
+            conform(src["path"], full_src, plan["width"], plan["height"], src["has_audio"])
+            join_clips(full_src, clip, full)
+            clip = full
+        except (subprocess.CalledProcessError, RuntimeError) as e:
+            err = e.stderr.decode("utf-8", "replace")[-400:] if getattr(e, "stderr", None) else str(e)
+            info["warning"] = f"接回原片失敗，只交出新的那一段：{err}"
+            log(f"{j['id']}: {info['warning']}")
+        finally:
+            (comfy_input() / tail).unlink(missing_ok=True)
+            full_src.unlink(missing_ok=True)
+    return clip, info
 
 
 def run_tts(j):
@@ -332,7 +498,7 @@ def main():
         pictures = any(j["type"] == "image" for j in jobs) or manifest.get("install_pictures", False)
         log("models: downloading what is missing", "models")
         download(BASE_MODELS + (PICTURE_MODELS if pictures else []))
-        start_servers(pictures)
+        start_comfy()
     STATE["stage"] = "generating"
     for j in jobs:
         st = STATE["jobs"][j["id"]]
@@ -344,6 +510,8 @@ def main():
             shutil.copy(str(src), str(dst))
             st.update(status="done", file=dst.name, bytes=dst.stat().st_size, seconds_used=round(time.time() - st["started"], 1),
                       final_prompt=(info.get("final_prompt") or "")[:4000], seed=info.get("seed"))
+            if info.get("warning"):
+                st["warning"] = info["warning"]
             log(f"{j['id']}: done in {st['seconds_used']} s -> {dst.name}")
         except Exception as e:
             st.update(status="error", error=str(e)[:1500])

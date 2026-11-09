@@ -295,9 +295,10 @@ def run(args):
     finished = False
     try:
         remote_exec(session, "import os\nos.makedirs('/content/h3job/inputs', exist_ok=True)\nprint('ok')")
-        for f in ("remote_job.py",):
+        for f in ("remote_job.py", "h3graph.py"):
             colab("upload", "-s", session, REMOTE / f, f"/content/h3job/{f}")
-        colab("upload", "-s", session, SKILL / "workflows" / "h3_tts32_api.json", "/content/h3job/h3_tts32_api.json")
+        for f in ("h3_tts32_api.json", "h3_video_api.json", "h3_picture_api.json"):  # posted to ComfyUI as they are
+            colab("upload", "-s", session, SKILL / "workflows" / f, f"/content/h3job/{f}")
         manifest_tmp = Path(tempfile.gettempdir()) / f"{session}_manifest.json"
         manifest_tmp.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
         colab("upload", "-s", session, manifest_tmp, "/content/h3job/manifest.json")
@@ -311,7 +312,7 @@ def run(args):
             print(f"⬆️ {f}", flush=True)
             colab("upload", "-s", session, base / f, "/content/h3job/inputs/" + f.replace("\\", "/"), timeout=900)
         print(remote_exec(session, (REMOTE / "start.py").read_text(encoding="utf-8")).strip()[-300:], flush=True)
-        got, last_line, misses = set(), "", 0
+        got, last_line, misses, shown_log = set(), "", 0, set()
         while True:
             time.sleep(30)
             if time.time() - t0 > args.max_minutes * 60:
@@ -329,7 +330,9 @@ def run(args):
             if line != last_line:
                 print(line, flush=True)
                 for l in st.get("log", [])[-2:]:
-                    print("    " + l, flush=True)
+                    if l not in shown_log:  # the status line carries the elapsed minutes, so it changes every poll
+                        print("    " + l, flush=True)
+                        shown_log.add(l)
                 last_line = line
             for jid, v in st.get("jobs", {}).items():
                 if v.get("status") == "done" and jid not in got:
