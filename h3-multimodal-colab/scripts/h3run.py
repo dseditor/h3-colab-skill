@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 from pathlib import Path
@@ -249,6 +250,21 @@ def skip_finished(m, base, force):
 DEFAULT_RES = {"L4": "480P", "G4": "720P", "A100": "720P", "H100": "720P"}  # the creator: G4 means 720P by default
 
 
+def choose_gpu_auto(m):
+    """Boot-time auto-tiering: L4 for light/interactive runs; A100 (40GB) for heavy batches."""
+    imgs = [j for j in m["jobs"] if j.get("type") == "image"]
+    vids = [j for j in m["jobs"] if j.get("type") == "video"]
+    if any(str(j.get("size", "2K")).upper() in ("2.7K", "3K", "4K") for j in imgs):
+        return "A100", "包含 2.7K/3K/4K 高畫質大圖"
+    if len(imgs) >= 5:
+        return "A100", f"單批包含 {len(imgs)} 張圖片（≥5 張大批次）"
+    if any(str(j.get("resolution", "")).upper() == "720P" for j in vids):
+        return "A100", "包含 720P 影片"
+    if len(vids) >= 2 or sum(float(j.get("seconds", 10)) for j in vids) >= 10:
+        return "A100", "包含多支或 ≥10 秒影片任務"
+    return "L4", "一般 2K 生圖／短片試拍（省點模式）"
+
+
 def spec_summary(m, gpu):
     vids = [j for j in m["jobs"] if j["type"] == "video"]
     secs = sum(float(j.get("seconds", 10)) for j in vids)
@@ -266,10 +282,17 @@ def spec_summary(m, gpu):
 def run(args):
     m, base = load_manifest(args.manifest)
     m = skip_finished(m, base, args.force)
-    gpu = (args.gpu or m.get("gpu") or "L4").upper()
+    explicit_gpu = args.gpu or m.get("gpu")
+    if explicit_gpu and str(explicit_gpu).upper() != "AUTO":
+        gpu = str(explicit_gpu).upper()
+        gpu_reason = "手動指定"
+    else:
+        gpu, gpu_reason = choose_gpu_auto(m)
     if gpu not in GPUS:
         sys.exit(f"GPU 只接受 {GPUS}（打錯字 colab 會默默開成 A100）")
-    for j in m["jobs"]:  # resolution not given: the GPU's default (L4 480P, G4 720P)
+    if args.idle_minutes is None:
+        args.idle_minutes = 10.0 if gpu in ("A100", "G4", "H100") else 15.0
+    for j in m["jobs"]:  # resolution not given: the GPU's default (L4 480P, A100/G4 720P)
         if j["type"] == "video" and not j.get("resolution"):
             j["resolution"] = DEFAULT_RES[gpu]
     if args.with_pictures:
@@ -277,21 +300,37 @@ def run(args):
     if sum(1 for j in m["jobs"] if j["type"] == "video") >= 2 and not args.confirmed:
         print("📋 這批：" + spec_summary(m, gpu))
         sys.exit("兩支以上的影片要先跟使用者確認規格（解析度、直式或橫式、秒數），確認後再加 --confirmed 送出。")
-    print("📋 這批：" + spec_summary(m, gpu), flush=True)
+    print(f"📋 這批：{spec_summary(m, gpu)}（選卡原因：{gpu_reason}）", flush=True)
     if not token_ok():
         sys.exit("還沒登入 Colab：先跑 python colab_login.py url，照指示登入")
     units, _ = usage()
     print(f"💳 剩餘運算單元：{units if units is not None else '（讀不到，請看 colab usage）'}", flush=True)
     if units is not None and units < 5:
-        sys.exit("運算單元不到 5，先不開機（G4 每小時約 11、L4 約 1.5）")
+        sys.exit("運算單元不到 5，先不開機（A100 每小時約 5.3、G4 約 11、L4 約 1.5）")
     out_dir = base / "out"
     out_dir.mkdir(exist_ok=True)
     session, created = args.session, False
     alive, _ = sessions()
+    if not session and alive and not explicit_gpu:
+        session = alive[-1]
+        print(f"♻️ 自動偵測到場上還有開著的 {session}，直接沿用不重開機！", flush=True)
     if not session or session not in alive:
         session = session or f"{PREFIX}{time.strftime('%m%d-%H%M%S')}"
-        print(f"🚀 開一台 {gpu}：{session}", flush=True)
-        colab("new", "-s", session, "--gpu", gpu, timeout=900)
+        print(f"🚀 開一台 {gpu}：{session}（{gpu_reason}）", flush=True)
+        try:
+            colab("new", "-s", session, "--gpu", gpu, timeout=900)
+        except RuntimeError:
+            if gpu != "L4" and not explicit_gpu:
+                print(f"⚠️ Colab 目前 {gpu} 滿載／無可用機器，自動改開 L4 省點模式！", flush=True)
+                gpu = "L4"
+                args.idle_minutes = 15.0
+                for j in m["jobs"]:
+                    if j.get("type") == "video" and j.get("resolution") == "720P":
+                        j["resolution"] = "480P"
+                session = f"{PREFIX}{time.strftime('%m%d-%H%M%S')}"
+                colab("new", "-s", session, "--gpu", gpu, timeout=900)
+            else:
+                raise
         created = True
     else:
         print(f"♻️ 沿用還開著的 {session}（模型已經在上面，可以省下安裝和下載）", flush=True)
@@ -300,35 +339,51 @@ def run(args):
     set_keep(session, None)  # busy: an earlier batch's watchdog must not stop this one
     finished = False
     try:
-        remote_exec(session, "import os\nos.makedirs('/content/h3job/inputs', exist_ok=True)\nprint('ok')")
-        for f in ("remote_job.py", "h3graph.py"):
-            colab("upload", "-s", session, REMOTE / f, f"/content/h3job/{f}")
-        for f in ("h3_tts32_api.json", "h3_video_api.json", "h3_picture_api.json"):  # posted to ComfyUI as they are
-            colab("upload", "-s", session, SKILL / "workflows" / f, f"/content/h3job/{f}")
-        manifest_tmp = Path(tempfile.gettempdir()) / f"{session}_manifest.json"
-        manifest_tmp.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
-        colab("upload", "-s", session, manifest_tmp, "/content/h3job/manifest.json")
+        types_needed = {j["type"] for j in m["jobs"]}
         files = {f for j in m["jobs"] for f in list(j.get("inputs", [])) + list(j.get("voices", []))
                  + [j[k] for k in ("first", "last", "extend", "drive_audio") if j.get(k) and (base / j[k]).is_file()]}
         files = {f for f in files if not str(f).startswith("@")}
-        dirs = sorted({str(Path(f).parent).replace("\\", "/") for f in files} - {"."})
-        if dirs:
-            remote_exec(session, "import os\n" + "".join(f"os.makedirs('/content/h3job/inputs/{d}', exist_ok=True)\n" for d in dirs))
-        for f in sorted(files):
-            print(f"⬆️ {f}", flush=True)
-            colab("upload", "-s", session, base / f, "/content/h3job/inputs/" + f.replace("\\", "/"), timeout=900)
-        print(remote_exec(session, (REMOTE / "start.py").read_text(encoding="utf-8")).strip()[-300:], flush=True)
+        manifest_tmp = Path(tempfile.gettempdir()) / f"{session}_manifest.json"
+        bundle_tmp = Path(tempfile.gettempdir()) / f"{session}_bundle.tar.gz"
+        manifest_tmp.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
+        with tarfile.open(bundle_tmp, "w:gz") as tf:
+            for f in ("remote_job.py", "h3graph.py"):
+                tf.add(REMOTE / f, arcname=f)
+            for f in ("h3_tts32_api.json", "h3_video_api.json", "h3_picture_api.json"):
+                tf.add(SKILL / "workflows" / f, arcname=f)
+            tf.add(manifest_tmp, arcname="manifest.json")
+            for f in sorted(files):
+                print(f"📦 {f}", flush=True)
+                tf.add(base / f, arcname="inputs/" + f.replace("\\", "/"))
+        try:
+            colab("upload", "-s", session, bundle_tmp, "/content/h3job_bundle.tar.gz", timeout=900)
+        finally:
+            manifest_tmp.unlink(missing_ok=True)
+            bundle_tmp.unlink(missing_ok=True)
+        hf_tok = os.environ.get("HF_TOKEN", "")
+        hf_env = f"os.environ['HF_TOKEN'] = {hf_tok!r}\n" if hf_tok else ""
+        unpack_and_start = (
+            "import os, tarfile\n"
+            + hf_env +
+            "os.makedirs('/content/h3job/inputs', exist_ok=True)\n"
+            "with tarfile.open('/content/h3job_bundle.tar.gz', 'r:gz') as tf:\n"
+            "    tf.extractall('/content/h3job', filter='data')\n"
+            "os.remove('/content/h3job_bundle.tar.gz')\n"
+        ) + (REMOTE / "start.py").read_text(encoding="utf-8")
+        print(remote_exec(session, unpack_and_start).strip()[-300:], flush=True)
         got, last_line, misses, shown_log = set(), "", 0, set()
+        poll_interval = 12 if types_needed == {"image"} else 30
+        max_misses = 25 if poll_interval == 12 else 10
         while True:
-            time.sleep(30)
+            time.sleep(poll_interval)
             if time.time() - t0 > args.max_minutes * 60:
                 raise RuntimeError(f"超過 {args.max_minutes} 分鐘上限，先停下來保護點數")
             st = poll(session)
             if not st:
                 misses += 1
                 print(f"…（這次沒讀到進度，下一輪再看；連續 {misses} 次）", flush=True)
-                if misses >= 10:
-                    raise RuntimeError("連續 10 次讀不到遠端進度（約半小時），先停下來保護點數")
+                if misses >= max_misses:
+                    raise RuntimeError(f"連續 {max_misses} 次讀不到遠端進度，先停下來保護點數")
                 continue
             misses = 0
             line = f"[{(time.time() - t0) / 60:4.1f} 分] {st.get('stage')} · " + " ".join(
@@ -399,8 +454,8 @@ def main():
     r.add_argument("manifest")
     r.add_argument("--gpu")
     r.add_argument("--session")
-    r.add_argument("--idle-minutes", type=float, default=15,
-                   help="做完先留著 GPU 等下一批，幾分鐘沒有新工作就自動關（預設 15；0＝做完馬上關）")
+    r.add_argument("--idle-minutes", type=float, default=None,
+                   help="做完先留著 GPU 等下一批，幾分鐘沒有新工作就自動關（預設 L4=15、A100/G4=10；0＝做完馬上關）")
     r.add_argument("--stop-after", action="store_true", help="做完馬上釋放 GPU")
     r.add_argument("--max-minutes", type=float, default=120)
     r.add_argument("--force", action="store_true", help="out/ 裡已經有的也重做")
