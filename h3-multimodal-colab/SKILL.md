@@ -137,6 +137,8 @@ python scripts/h3run.py check              # 看到剩餘運算單元＝成功
 `inputs` 裡不要再放聲音檔，也不能和 `extend` 一起用。聲音不會被重新生成，所以歌詞、旋律都不會跑掉。
 
 對話和衝突場面**用 ref 最穩**：首格會把還沒進場的人也畫進畫面，參考生成不會。
+相反地，若需求是**「讓這張圖動起來」**（保持原圖構圖、光影與畫風不走樣），必須使用 `mode: "frames"` 並填入 `first`（I2VA 首格鎖定），不可用 `ref`（Ref2VA 會把原圖當參考素材重新構圖，2D 插畫或特定畫面極易被重繪走樣）。
+另外受 32B VLM 編碼器注意力計算影響，**雙參考圖的耗時通常會比單參考圖翻倍以上**（L4 上單圖約 20–45 秒，雙圖常達 140 秒+）；若單張參考圖就能達成構圖，不建議硬塞兩張。
 
 ### 動作強度 `intensity`（預設 `off`）
 | 內容 | intensity |
@@ -172,3 +174,4 @@ python scripts/h3run.py check              # 看到剩餘運算單元＝成功
 - 點數不足、分配不到 GPU → 換 L4 或晚點再試；**不要**改成 A100（很貴）。
 - 某一段生成失敗 → 讀 `out/results.json` 的 error，只重送那一段（可以 `--session` 沿用還開著的機器）。
 - 中途斷線 → 先 `h3run.py sessions`，有殘留就 `stop`，再重送。
+- 本機終端機超時（Terminal Timeout）**不代表遠端失敗**：若 `h3run.py` 因本機命令超時中斷，遠端 Colab 通常仍在背景下載模型或生成中，**切勿直接 `stop` 砍機**（會浪費已花費的下載時間與點數）。先用 `colab exec -s <session> -f remote/status.py` 查詢遠端進度並視需要補掛 `h3run.py keep --session <session> --minutes 15`。
