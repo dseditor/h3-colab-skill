@@ -126,7 +126,7 @@ def needed(pictures, official=False, jobs=None):
         return R.models_for(jobs, pictures)
     off = R.OFFICIAL_MODELS["ref"] + R.OFFICIAL_MODELS["fl"]
     if official == "only":
-        return R.COMMON_MODELS + off + (R.PICTURE_MODELS if pictures else [])
+        return R.SHARED_ENCODER + R.COMMON_MODELS + off + (R.PICTURE_MODELS if pictures else [])
     return R.BASE_MODELS + (R.PICTURE_MODELS if pictures else []) + (off if official else [])
 
 

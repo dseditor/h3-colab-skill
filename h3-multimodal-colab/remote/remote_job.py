@@ -41,8 +41,10 @@ STATE = {"stage": "starting", "log": [], "jobs": {}, "done": False, "error": Non
 TEMPLATE_DIRS = [JOB, Path(__file__).resolve().parent.parent / "workflows"]  # uploaded copies first
 
 ASSETS = "dseditor/minimax-h3-studio-assets"
-COMMON_MODELS = [  # (repo, file in repo, models/ subfolder): every video/TTS batch, whatever the model set
+SHARED_ENCODER = [
     ("Comfy-Org/MiniMax-H3", "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", "text_encoders"),
+]
+COMMON_MODELS = [  # (repo, file in repo, models/ subfolder): every video/TTS batch, whatever the model set
     ("Comfy-Org/MiniMax-H3", "vae/minimax_h3_video_vae_int8_convrot.safetensors", "vae"),
     ("Comfy-Org/MiniMax-H3", "vae/minimax_h3_audio_vae_fp32.safetensors", "vae"),
     ("Comfy-Org/MiniMax-H3", "loras/pika_h3_flex_ref2va_v1_bf16.safetensors", "loras"),  # video + TTS
@@ -59,7 +61,7 @@ COMMUNITY_MODELS = [  # model_set "default": the community merge, its turbo LoRA
     "loras/minimax_h3_turbo_v4_step600_ema_DasiwaREF2VAHybridV1_0_curveproj1025_compat_v001.safetensors",
     "loras/MysticXXX_MMH3-V2.safetensors",
 ]]
-BASE_MODELS = COMMUNITY_MODELS[:1] + COMMON_MODELS + COMMUNITY_MODELS[1:]  # what a default batch needs (unchanged)
+BASE_MODELS = COMMUNITY_MODELS[:1] + SHARED_ENCODER + COMMON_MODELS + COMMUNITY_MODELS[1:]  # what a default batch needs (unchanged)
 OFFICIAL_MODELS = {  # model_set "official" (Comfy-Org), per family: see h3graph.OFFICIAL and references/official.md
     "ref": [("Comfy-Org/MiniMax-H3", "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors", "diffusion_models"),
             ("Comfy-Org/MiniMax-H3", "loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors", "loras")],
@@ -70,15 +72,19 @@ OFFICIAL_MODELS = {  # model_set "official" (Comfy-Org), per family: see h3graph
 
 
 def models_for(jobs, pictures=False):
-    """Exactly the files a batch needs. Image and TTS jobs, and video jobs without model_set "official",
-    need the community set; official video jobs add only the Comfy-Org family they use."""
+    """Exactly the files a batch needs. Pure-image batches only fetch SHARED_ENCODER + COMMUNITY_MODELS + PICTURE_MODELS
+    and skip the video/TTS VAEs, action LoRAs, semantic bridge and latent upscaler."""
+    need_video = any(j["type"] in ("video", "tts") for j in jobs)
+    need_pictures = pictures or any(j["type"] == "image" for j in jobs)
+    if not need_video:
+        return SHARED_ENCODER + COMMUNITY_MODELS + PICTURE_MODELS
     community = any(j["type"] != "video" or j.get("model_set", "default") != "official" for j in jobs) or pictures
     fams = sorted({G.official_family(j.get("mode", "ref")) for j in jobs
                    if j["type"] == "video" and j.get("model_set") == "official"})
-    out = COMMON_MODELS + (COMMUNITY_MODELS if community else [])
+    out = SHARED_ENCODER + COMMON_MODELS + (COMMUNITY_MODELS if community else [])
     for f in fams:
         out = out + OFFICIAL_MODELS[f]
-    return out + (PICTURE_MODELS if pictures else [])
+    return out + (PICTURE_MODELS if need_pictures else [])
 
 
 PICTURE_MODELS = [  # P-H3-Image (PrunaAI): a LoRA on the same H3 model + its own encoder and image VAE (~10 GB)
@@ -387,6 +393,39 @@ def source_path(rel):
     return path
 
 
+MAX_REF_SIDE = int(os.environ.get("H3JOB_MAX_REF_SIDE", "1280"))
+
+
+def _copy_or_resize_image(src, dst):
+    if MAX_REF_SIDE <= 0:
+        shutil.copy(str(src), str(dst))
+        return
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(src) as im:
+            im = ImageOps.exif_transpose(im)
+            w, h = im.size
+            if max(w, h) <= MAX_REF_SIDE:
+                shutil.copy(str(src), str(dst))
+                return
+            scale = MAX_REF_SIDE / float(max(w, h))
+            nw, nh = max(64, int(round(w * scale))), max(64, int(round(h * scale)))
+            if im.mode not in ("RGB", "RGBA"):
+                im = im.convert("RGBA" if "A" in im.getbands() else "RGB")
+            im = im.resize((nw, nh), Image.Resampling.LANCZOS)
+            if dst.suffix.lower() in (".jpg", ".jpeg") and im.mode == "RGBA":
+                im = im.convert("RGB")
+            if dst.suffix.lower() in (".jpg", ".jpeg", ".webp"):
+                im.save(str(dst), quality=95)
+            else:
+                im.save(str(dst))
+            log(f"resized ref image {src.name}: {w}x{h} -> {nw}x{nh}")
+            return
+    except Exception:
+        pass
+    shutil.copy(str(src), str(dst))
+
+
 def stage(path, prefix="h3skill"):
     """Copy one file into ComfyUI's input folder and describe it (kind, size, audio track)."""
     path = Path(path)
@@ -400,14 +439,17 @@ def stage(path, prefix="h3skill"):
         name = f"{prefix}_{digest}{ext}"
         dst = comfy_input() / name
         if not dst.is_file():
-            shutil.copy(str(path), str(dst))
+            if kind == "image":
+                _copy_or_resize_image(path, dst)
+            else:
+                shutil.copy(str(path), str(dst))
         item = {"kind": kind, "name": name, "path": str(path), "width": None, "height": None, "has_audio": False}
         if kind == "image":
-            item["width"], item["height"] = image_size(path)
+            item["width"], item["height"] = image_size(dst)
         elif kind == "video":
-            item["width"], item["height"], item["has_audio"] = probe_video(path)
+            item["width"], item["height"], item["has_audio"] = probe_video(dst)
         else:
-            item["seconds"] = probe_seconds(path)
+            item["seconds"] = probe_seconds(dst)
         STAGED[key] = item
     return STAGED[key]
 
