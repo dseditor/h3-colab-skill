@@ -1,0 +1,138 @@
+{
+ "1": {
+  "inputs": {
+   "unet_name": "minimax_h3_image_pruned_w4a8.safetensors",
+   "weight_dtype": "default"
+  },
+  "class_type": "UNETLoader",
+  "_meta": {
+   "title": "UNETLoader",
+   "cnr_id": "comfy-core",
+   "ver": "0.45.0"
+  }
+ },
+ "2": {
+  "inputs": {
+   "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+   "type": "minimax",
+   "device": "default"
+  },
+  "class_type": "CLIPLoader",
+  "_meta": {
+   "title": "CLIPLoader",
+   "cnr_id": "comfy-core",
+   "ver": "0.45.0"
+  }
+ },
+ "3": {
+  "inputs": {
+   "vae_name": "minimax_h3_image_vae_fp16.safetensors"
+  },
+  "class_type": "VAELoader",
+  "_meta": {
+   "title": "VAELoader",
+   "cnr_id": "comfy-core",
+   "ver": "0.45.0"
+  }
+ },
+ "5": {
+  "inputs": {
+   "prompt": "",
+   "width": 2048,
+   "height": 2048,
+   "clip": [
+    "2",
+    0
+   ],
+   "vae": [
+    "3",
+    0
+   ]
+  },
+  "class_type": "MiniMaxH3ImageConditioning",
+  "_meta": {
+   "title": "MiniMaxH3ImageConditioning",
+   "cnr_id": "comfy-core",
+   "ver": "0.45.0"
+  }
+ },
+ "6": {
+  "inputs": {
+   "conditioning": [
+    "5",
+    0
+   ]
+  },
+  "class_type": "ConditioningZeroOut",
+  "_meta": {
+   "title": "ConditioningZeroOut",
+   "cnr_id": "comfy-core",
+   "ver": "0.45.0"
+  }
+ },
+ "7": {
+  "inputs": {
+   "seed": 42,
+   "steps": 6,
+   "cfg": 1,
+   "sampler_name": "euler",
+   "scheduler": "simple",
+   "denoise": 1,
+   "model": [
+    "1",
+    0
+   ],
+   "positive": [
+    "5",
+    0
+   ],
+   "negative": [
+    "6",
+    0
+   ],
+   "latent_image": [
+    "5",
+    1
+   ]
+  },
+  "class_type": "KSampler",
+  "_meta": {
+   "title": "KSampler",
+   "cnr_id": "comfy-core",
+   "ver": "0.45.0"
+  }
+ },
+ "8": {
+  "inputs": {
+   "samples": [
+    "7",
+    0
+   ],
+   "vae": [
+    "3",
+    0
+   ]
+  },
+  "class_type": "VAEDecode",
+  "_meta": {
+   "title": "VAEDecode",
+   "cnr_id": "comfy-core",
+   "ver": "0.45.0"
+  }
+ },
+ "9": {
+  "inputs": {
+   "filename_prefix": "h3skill/img",
+   "images": [
+    "8",
+    0
+   ]
+  },
+  "class_type": "SaveImage",
+  "_meta": {
+   "title": "SaveImage",
+   "cnr_id": "comfy-core",
+   "ver": "0.45.0"
+  }
+ }
+}

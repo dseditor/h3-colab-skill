@@ -180,8 +180,8 @@ def load_manifest(path):
                 problems.append(f"{jid}：找不到輸入檔 {f}（路徑相對於 manifest 所在資料夾）")
         if j.get("type") == "video" and j.get("extend") and j.get("mode", "ref") != "ref":
             problems.append(f"{jid}：延伸只能用 ref 模式")
-        if j.get("type") == "image" and len(j.get("inputs", [])) > 8:
-            problems.append(f"{jid}：圖片編輯最多 8 張")
+        if j.get("type") == "image" and len(j.get("inputs", [])) > 16:
+            problems.append(f"{jid}：圖片編輯與參考最多 16 張")
         if j.get("type") == "tts" and len(j.get("voices", [])) > 3:
             problems.append(f"{jid}：TTS 最多 3 條參考聲音")
         if j.get("type") in ("video", "tts") and not 2 <= float(j.get("seconds", 10)) <= 15:
@@ -303,7 +303,7 @@ def run(args):
         remote_exec(session, "import os\nos.makedirs('/content/h3job/inputs', exist_ok=True)\nprint('ok')")
         for f in ("remote_job.py", "h3graph.py"):
             colab("upload", "-s", session, REMOTE / f, f"/content/h3job/{f}")
-        for f in ("h3_tts32_api.json", "h3_video_api.json", "h3_picture_api.json"):  # posted to ComfyUI as they are
+        for f in ("h3_tts32_api.json", "h3_video_api.json", "h3_image_api.json"):  # posted to ComfyUI as they are
             colab("upload", "-s", session, SKILL / "workflows" / f, f"/content/h3job/{f}")
         manifest_tmp = Path(tempfile.gettempdir()) / f"{session}_manifest.json"
         manifest_tmp.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")

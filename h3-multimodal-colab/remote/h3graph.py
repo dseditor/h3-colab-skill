@@ -22,7 +22,7 @@ from pathlib import Path
 FPS = 24
 WORKFLOWS = Path(__file__).resolve().parent.parent / "workflows"
 VIDEO_TEMPLATE = "h3_video_api.json"
-PICTURE_TEMPLATE = "h3_picture_api.json"
+PICTURE_TEMPLATE = "h3_image_api.json"
 
 # fast mode (default on): fewer SelfLift steps, [total, low-resolution steps]
 STEPS = {"normal": (12, 6), "fast": (8, 4)}
@@ -64,16 +64,16 @@ def apply_model_set(manifest):
     return manifest
 # extension (H3 Motion Context): frames of the source tail pinned into the head of the new clip
 EXTEND = {"context_length": "22", "audio_context_length": 24, "tail_seconds": 3.0}
-# long side of a picture per size key (P-H3 is best at 2K+)
-IMAGE_SIZES = {"1K": 1024, "1.3K": 1344, "1.6K": 1664, "2K": 2048, "2.7K": 2720}
-ASPECTS = {"16:9": (16, 9), "9:16": (9, 16), "1:1": (1, 1), "4:3": (4, 3), "3:4": (3, 4), "21:9": (21, 9)}
+# long side of a picture per size key (MiniMax-H3-Image supports up to 4K)
+IMAGE_SIZES = {"1K": 1024, "1.3K": 1344, "1.6K": 1664, "2K": 2048, "2.7K": 2720, "3K": 3072, "4K": 4096}
+ASPECTS = {"16:9": (16, 9), "9:16": (9, 16), "1:1": (1, 1), "4:3": (4, 3), "3:4": (3, 4), "3:2": (3, 2), "2:3": (2, 3), "21:9": (21, 9)}
 
 # node ids in h3_video_api.json
 N_COND, N_SAMPLER, N_SCHED, N_BRIDGE = "265", "397", "261", "402"
 N_VAE, N_AVAE, N_CLIP, N_SECONDS = "36", "37", "38", "259"
 N_DECODE, N_ADECODE, N_CREATE, N_SAVE = "253", "254", "cv", "sv"
-# node ids in h3_picture_api.json
-N_IMG_ENC, N_IMG_NOISE, N_IMG_SAVE = "ienc", "in", "isave"
+# node ids in h3_image_api.json (MiniMax-H3-Image)
+N_IMG_ENC, N_IMG_NOISE, N_IMG_SAVE = "5", "7", "9"
 
 # never allowed in a graph this skill posts: they need extra node packs or only feed a UI preview
 FORBIDDEN_CLASS = ("VHS_", "Preview", "ChunkFeedForward", "ResolutionSelector")
@@ -427,9 +427,9 @@ def plan_picture(job, inputs=(), rng=None):
         refs = chosen["image"]
     else:
         tagged, refs = text, pictures
-    if len(refs) > 8:
-        raise ValueError("P-H3 編輯最多 8 張圖（第 1 張是要改的那張）")
-    size = job.get("size", "2K")
+    if len(refs) > 16:
+        raise ValueError("MiniMax-H3-Image 編輯與參考最多 16 張圖（第 1 張是要改的那張）")
+    size = str(job.get("size", "2K")).upper()
     w, h = image_dims(job.get("aspect", "auto"), size, refs)
     return {"task": "Edit" if refs else "T2I", "final_prompt": tagged, "refs": refs, "width": w, "height": h,
             "seed": pick_seed(job.get("seed"), rng), "size": size}
@@ -441,7 +441,8 @@ def picture_graph(template, plan):
     for k in [k for k in enc if k.startswith("images.")]:
         del enc[k]
     enc["prompt"], enc["width"], enc["height"] = plan["final_prompt"], plan["width"], plan["height"]
-    g[N_IMG_NOISE]["inputs"]["noise_seed"] = plan["seed"]
+    noise_inputs = g[N_IMG_NOISE]["inputs"]
+    noise_inputs["seed" if "seed" in noise_inputs else "noise_seed"] = plan["seed"]
     for i, item in enumerate(plan["refs"], 1):  # image_1 is the picture edited, the rest are references, in order
         g[f"ir{i}"] = {"class_type": "LoadImage", "inputs": {"image": item["name"]}}
         enc[f"images.image_{i}"] = [f"ir{i}", 0]
@@ -724,7 +725,7 @@ def check_picture(g, plan):
         src = _source(g, ei.get(f"images.image_{i}"), "LoadImage")
         if not src or src["inputs"].get("image") != item["name"]:
             problems.append(f"參考圖第 {i} 張沒有接進 {enc.get('class_type', '編碼節點')} 的 images.image_{i}")
-    if g.get(N_IMG_NOISE, {}).get("inputs", {}).get("noise_seed") != plan["seed"]:
+    if g.get(N_IMG_NOISE, {}).get("inputs", {}).get("seed" if "seed" in g.get(N_IMG_NOISE, {}).get("inputs", {}) else "noise_seed") != plan["seed"]:
         problems.append("seed differs")
     return problems
 

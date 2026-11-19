@@ -81,10 +81,9 @@ def models_for(jobs, pictures=False):
     return out + (PICTURE_MODELS if pictures else [])
 
 
-PICTURE_MODELS = [  # P-H3-Image (PrunaAI): a LoRA on the same H3 model + its own encoder and image VAE (~10 GB)
-    ("PrunaAI/P-H3-Image-Comfy", "loras/p-h3-image_lora_bf16.safetensors", "loras"),
-    ("PrunaAI/P-H3-Image-Comfy", "text_encoders/p-h3-image_text_encoder_int8_convrot.safetensors", "text_encoders"),
-    ("PrunaAI/P-H3-Image-Comfy", "vae/p-h3-image_vae_int8_convrot.safetensors", "vae"),
+PICTURE_MODELS = [  # MiniMax-H3-Image (Comfy-Org 33.1B W4A8 + FP16 Image VAE, ~12.8 GB + shared Qwen3-VL 32B)
+    ("Comfy-Org/MiniMax-H3-Image", "diffusion_models/minimax_h3_image_pruned_w4a8.safetensors", "diffusion_models"),
+    ("Comfy-Org/MiniMax-H3-Image", "vae/minimax_h3_image_vae_fp16.safetensors", "vae"),
 ]
 NODES = {
     "minimax-h3-audio-t8": "https://github.com/T8mars/comfyui-minimax-h3-audio-T8",

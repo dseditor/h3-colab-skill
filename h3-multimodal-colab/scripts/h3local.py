@@ -276,7 +276,7 @@ def run(args):
                 (work / "inputs" / f).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy(base / f, work / "inputs" / f)
     (work / "manifest.json").write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
-    for f in ("h3_tts32_api.json", "h3_video_api.json", "h3_picture_api.json"):  # posted to ComfyUI as they are
+    for f in ("h3_tts32_api.json", "h3_video_api.json", "h3_image_api.json"):  # posted to ComfyUI as they are
         shutil.copy(SKILL / "workflows" / f, work / f)
 
     env = dict(ENV, H3JOB_LOCAL_TEST="1", H3JOB_FETCH="1", H3JOB_DIR=str(work), H3JOB_COMFY_URL=c.url,
