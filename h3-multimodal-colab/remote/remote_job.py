@@ -69,15 +69,21 @@ OFFICIAL_MODELS = {  # model_set "official" (Comfy-Org), per family: see h3graph
 }
 
 
+ANIME_VAE_MODEL = [(ASSETS, "vae/minimax_h3_video_vae_dully_seamless_int8_convrot.safetensors", "vae")]
+
+
 def models_for(jobs, pictures=False):
     """Exactly the files a batch needs. Image and TTS jobs, and video jobs without model_set "official",
     need the community set; official video jobs add only the Comfy-Org family they use."""
     community = any(j["type"] != "video" or j.get("model_set", "default") != "official" for j in jobs) or pictures
     fams = sorted({G.official_family(j.get("mode", "ref")) for j in jobs
                    if j["type"] == "video" and j.get("model_set") == "official"})
+    need_anime_vae = any(j["type"] == "video" and str(j.get("vae", "")).lower() == "anime" for j in jobs)
     out = COMMON_MODELS + (COMMUNITY_MODELS if community else [])
     for f in fams:
         out = out + OFFICIAL_MODELS[f]
+    if need_anime_vae:
+        out = out + ANIME_VAE_MODEL
     return out + (PICTURE_MODELS if pictures else [])
 
 

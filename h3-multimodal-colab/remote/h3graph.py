@@ -46,6 +46,8 @@ OFFICIAL = {
 }
 FL_TASKS = ("FL2VA", "I2VA", "L2VA")
 MODEL_SETS = ("default", "official")
+DEFAULT_VIDEO_VAE = "minimax_h3_video_vae_int8_convrot.safetensors"
+ANIME_VIDEO_VAE = "minimax_h3_video_vae_dully_seamless_int8_convrot.safetensors"
 
 
 def official_family(task_or_mode):
@@ -291,6 +293,7 @@ def plan_video(job, inputs=(), first=None, last=None, extend=None, rng=None, dri
             "intensity": intensity, "multiplier": INTENSITY.get(intensity), "extend": bool(extend),
             "drive": drive["name"] if drive else None,
             "model_set": model_set(job),
+            "vae": ANIME_VIDEO_VAE if str(job.get("vae", "official")).lower() == "anime" else DEFAULT_VIDEO_VAE,
             "unused_inputs": [i["name"] for i in unused]}
 
 
@@ -304,6 +307,8 @@ def model_set(job):
 def video_graph(template, plan, tail_name=None):
     """The template with the plan written in. tail_name: the conformed source tail in ComfyUI input (extend)."""
     wf = copy.deepcopy(template)
+    if N_VAE in wf and "vae_name" in wf[N_VAE].get("inputs", {}):
+        wf[N_VAE]["inputs"]["vae_name"] = plan.get("vae", DEFAULT_VIDEO_VAE)
     width, height = plan["width"], plan["height"]
     chosen = plan["chosen"]
     if plan["task"] == "Ref2VA":
